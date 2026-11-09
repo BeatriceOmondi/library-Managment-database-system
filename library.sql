@@ -82,3 +82,76 @@ CREATE TABLE Loans (
 -- Create indexes for loan lookups
 CREATE INDEX idx_loans_book_id ON Loans(book_id);
 CREATE INDEX idx_loans_member_id ON Loans(member_id);
+
+
+-- Trigger 1: Validate borrowing requests
+DELIMITER //
+
+CREATE TRIGGER before_loan_insert
+BEFORE INSERT ON Loans
+FOR EACH ROW
+BEGIN
+    DECLARE copies_available INT;
+
+    SELECT available_copies
+    INTO copies_available
+    FROM Books
+    WHERE book_id = NEW.book_id;
+
+    IF copies_available IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Book does not exist';
+    END IF;
+
+    IF copies_available <= 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No copies available for borrowing';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM Loans
+        WHERE book_id = NEW.book_id
+        AND member_id = NEW.member_id
+        AND return_date IS NULL
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'Member already has an active loan for this book';
+    END IF;
+END //
+
+-- Trigger 2: Decrease available copies after borrowing
+CREATE TRIGGER after_loan_insert
+AFTER INSERT ON Loans
+FOR EACH ROW
+BEGIN
+    UPDATE Books
+    SET available_copies = available_copies - 1
+    WHERE book_id = NEW.book_id;
+END //
+
+-- Trigger 3: Restore available copies after returning a book
+CREATE TRIGGER after_loan_update
+AFTER UPDATE ON Loans
+FOR EACH ROW
+BEGIN
+    IF OLD.return_date IS NULL AND NEW.return_date IS NOT NULL THEN
+        UPDATE Books
+        SET available_copies = available_copies + 1
+        WHERE book_id = NEW.book_id;
+    END IF;
+END //
+
+-- Trigger 4: Restore available copies when an active loan is deleted
+CREATE TRIGGER after_loan_delete
+AFTER DELETE ON Loans
+FOR EACH ROW
+BEGIN
+    IF OLD.return_date IS NULL THEN
+        UPDATE Books
+        SET available_copies = available_copies + 1
+        WHERE book_id = OLD.book_id;
+    END IF;
+END //
+
+DELIMITER ;
